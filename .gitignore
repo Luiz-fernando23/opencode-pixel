@@ -1,6 +1,7 @@
 node_modules/
 web/dist/
 dist/
+.dev*/
 *.log
 *.jsonl
 .DS_Store

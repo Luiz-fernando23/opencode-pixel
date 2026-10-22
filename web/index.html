@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>opencode-pixel</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1><span class="logo">▚</span> opencode-pixel</h1>
+      <div class="stats" id="stats"></div>
+      <div class="conn" id="conn">connecting…</div>
+    </header>
+    <main>
+      <canvas id="office" width="960" height="540"></canvas>
+      <p class="empty" id="empty">
+        Waiting for an OpenCode session…<br />
+        <small>Start an agent in any project on this machine and it will appear here.</small>
+      </p>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
