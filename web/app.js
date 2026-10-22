@@ -56,11 +56,14 @@ function connect() {
 
 function renderStats() {
   const { sessions, working, waiting, errors } = snapshot.stats;
+  const visible = pickVisible(snapshot.agents ?? []).length;
+  const hidden = Math.max(0, sessions - visible);
   statsEl.innerHTML =
     `<span><b>${sessions}</b> sessions</span>` +
     `<span><b>${working}</b> working</span>` +
     `<span><b>${waiting}</b> waiting</span>` +
-    (errors > 0 ? `<span style="color:#f4695f"><b>${errors}</b> errors</span>` : "");
+    (errors > 0 ? `<span style="color:#f4695f"><b>${errors}</b> errors</span>` : "") +
+    (hidden > 0 ? `<span title="Only the most relevant sessions fit in the office">+<b>${hidden}</b> hidden</span>` : "");
   emptyEl.classList.toggle("hidden", sessions > 0);
 }
 
@@ -102,6 +105,29 @@ function deskSlot(index) {
     x: PAD + col * (DESK_W + PAD),
     y: PAD + row * (DESK_H + PAD * 1.6),
   };
+}
+
+function slotCount() {
+  const cols = Math.max(1, Math.floor((canvas.width - PAD) / (DESK_W + PAD)));
+  const rows = Math.max(1, Math.floor((canvas.height - PAD) / (DESK_H + PAD * 1.6)) + 1);
+  return cols * rows;
+}
+
+/**
+ * The office has room for a handful of desks. Show every agent that is doing something,
+ * then fill the rest with the most recent idle sessions (stable order by first sighting).
+ */
+function pickVisible(agents) {
+  const capacity = slotCount();
+  if (agents.length <= capacity) return agents;
+  const priority = (agent) => (agent.status === "idle" ? 1 : 0);
+  const selected = new Set(
+    [...agents]
+      .sort((a, b) => priority(a) - priority(b) || b.lastEventAt - a.lastEventAt)
+      .slice(0, capacity)
+      .map((agent) => agent.sessionID),
+  );
+  return agents.filter((agent) => selected.has(agent.sessionID));
 }
 
 function drawDesk(slot) {
@@ -185,15 +211,24 @@ function wrapText(text, max) {
   return lines.slice(0, 2);
 }
 
+function projectName(agent) {
+  const dir = String(agent.directory || "").replace(/[\\/]+$/, "");
+  const parts = dir.split(/[\\/]/);
+  return parts[parts.length - 1] || "";
+}
+
 function drawLabel(slot, agent) {
   const { x, y } = slot;
-  const title = agent.title || agent.slug || agent.sessionID.slice(0, 12);
+  const title = agent.title || agent.slug || projectName(agent) || agent.sessionID.slice(0, 12);
   ctx.font = "11px 'Segoe UI', system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(230,232,239,0.9)";
   ctx.fillText(title.slice(0, 22), x + DESK_W / 2, y + TILE * 3.9);
   ctx.fillStyle = "rgba(139,144,163,0.9)";
-  ctx.fillText(STATUS_LABEL[agent.status] ?? agent.status, x + DESK_W / 2, y + TILE * 4.6);
+  const project = projectName(agent);
+  const status = STATUS_LABEL[agent.status] ?? agent.status;
+  const subtitle = project && project !== title ? `${status} · ${project}` : status;
+  ctx.fillText(subtitle.slice(0, 26), x + DESK_W / 2, y + TILE * 4.6);
   ctx.textAlign = "left";
 }
 
@@ -231,7 +266,7 @@ function drawBubble(slot, agent, time) {
 
 function draw(time) {
   drawRoom();
-  const agents = snapshot.agents ?? [];
+  const agents = pickVisible(snapshot.agents ?? []);
   agents.forEach((agent, index) => {
     const slot = deskSlot(index);
     drawDesk(slot);

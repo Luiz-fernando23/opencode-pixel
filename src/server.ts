@@ -61,18 +61,15 @@ async function probe(port: number): Promise<"office" | "taken" | "free"> {
 export async function startServer(options: OfficeServerOptions): Promise<OfficeServerHandle | null> {
   const { store, version, log } = options
   const root = webDir()
-  const files = new Map<string, { body: Buffer; type: string }>()
+  const files = new Map<string, { file: string; type: string }>()
   for (const [route, file, type] of [
     ["/", "index.html", "text/html; charset=utf-8"],
     ["/index.html", "index.html", "text/html; charset=utf-8"],
     ["/app.js", "app.js", "text/javascript; charset=utf-8"],
     ["/style.css", "style.css", "text/css; charset=utf-8"],
   ] as const) {
-    try {
-      files.set(route, { body: fs.readFileSync(path.join(root, file)), type })
-    } catch {
-      /* optional file */
-    }
+    const absolute = path.join(root, file)
+    if (fs.existsSync(absolute)) files.set(route, { file: absolute, type })
   }
   if (!files.has("/index.html")) {
     log(`dashboard assets not found in ${root}`)
@@ -166,8 +163,14 @@ export async function startServer(options: OfficeServerOptions): Promise<OfficeS
 
     const file = files.get(route)
     if (file) {
-      response.writeHead(200, { "content-type": file.type, "cache-control": "no-store" })
-      response.end(file.body)
+      try {
+        const body = fs.readFileSync(file.file)
+        response.writeHead(200, { "content-type": file.type, "cache-control": "no-store" })
+        response.end(body)
+      } catch {
+        response.writeHead(500, { "content-type": "text/plain" })
+        response.end("asset missing")
+      }
       return
     }
 
@@ -181,6 +184,7 @@ export async function startServer(options: OfficeServerOptions): Promise<OfficeS
     const status = await probe(candidate)
     if (status === "office") {
       unsubscribe()
+      log(`reusing dashboard already served on port ${candidate}`)
       return {
         port: candidate,
         url: `http://127.0.0.1:${candidate}/`,
@@ -201,6 +205,20 @@ export async function startServer(options: OfficeServerOptions): Promise<OfficeS
     if (bound) {
       port = candidate
       break
+    }
+
+    // Lost a bind race against another instance of this plugin. Give it a moment, then
+    // reuse it instead of starting a second dashboard on the next port (split brain).
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    if ((await probe(candidate)) === "office") {
+      unsubscribe()
+      log(`reusing dashboard already served on port ${candidate}`)
+      return {
+        port: candidate,
+        url: `http://127.0.0.1:${candidate}/`,
+        reused: true,
+        close: async () => {},
+      }
     }
   }
 
