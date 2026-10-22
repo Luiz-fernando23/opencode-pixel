@@ -1,0 +1,50 @@
+{
+  "name": "opencode-pixel",
+  "version": "0.0.0",
+  "description": "Pixel-art office dashboard that visualizes OpenCode agents in real time",
+  "type": "module",
+  "license": "MIT",
+  "author": "Luiz-fernando23",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "pixel-art",
+    "dashboard",
+    "visualization",
+    "agents",
+    "office"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Luiz-fernando23/opencode-pixel.git"
+  },
+  "homepage": "https://github.com/Luiz-fernando23/opencode-pixel#readme",
+  "bugs": {
+    "url": "https://github.com/Luiz-fernando23/opencode-pixel/issues"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "web/dist",
+    "assets",
+    "README.md",
+    "LICENSE",
+    "LICENSE-ASSETS.md"
+  ],
+  "dependencies": {
+    "@opencode/plugin": "^2.1.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "spike": "node spike/run.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
