@@ -27,8 +27,9 @@
   },
   "files": [
     "src",
-    "web/dist",
+    "web",
     "assets",
+    "docs",
     "README.md",
     "LICENSE",
     "LICENSE-ASSETS.md"
@@ -42,7 +43,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "spike": "node spike/run.mjs"
+    "prepublishOnly": "npm run typecheck"
   },
   "engines": {
     "node": ">=20"
