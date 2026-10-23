@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>sprite lab</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #0f1119;
+        color: #d9deea;
+        font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
+      }
+      header {
+        padding: 14px 18px;
+        border-bottom: 1px solid #262c3b;
+        display: flex;
+        gap: 18px;
+        align-items: baseline;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0;
+      }
+      #stage {
+        padding: 18px;
+        display: flex;
+        justify-content: center;
+      }
+      canvas {
+        image-rendering: pixelated;
+        background: #1a2030;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>opencode-pixel · sprite lab</h1>
+      <span>7 poses × 8 looks, 5×</span>
+    </header>
+    <div id="stage"><canvas id="lab"></canvas></div>
+    <script type="module">
+      import { LOOKS } from "/web/art/palette.js";
+      import { drawCharacter } from "/web/art/characters.js";
+      import { makeCanvas } from "/web/art/draw.js";
+
+      const SCALE = 5;
+      const CELL_W = 30;
+      const CELL_H = 40;
+      const ROWS = [
+        ["front", { dir: "down", pose: "stand" }],
+        ["back", { dir: "up", pose: "stand" }],
+        ["side", { dir: "right", pose: "stand" }],
+        ["walk", { dir: "down", pose: "walk", frame: 1 }],
+        ["wave", { dir: "down", pose: "wave" }],
+        ["cheer", { dir: "down", pose: "cheer" }],
+        ["typing", { dir: "up", pose: "type" }],
+      ];
+
+      const canvas = document.getElementById("lab");
+      canvas.width = CELL_W * LOOKS.length * SCALE;
+      canvas.height = CELL_H * ROWS.length * SCALE;
+      const g = canvas.getContext("2d");
+      g.imageSmoothingEnabled = false;
+      g.fillStyle = "#1a2030";
+      g.fillRect(0, 0, canvas.width, canvas.height);
+
+      // checkerboard to judge silhouettes
+      for (let y = 0; y < canvas.height; y += 16) {
+        for (let x = 0; x < canvas.width; x += 16) {
+          if (((x / 16) + (y / 16)) % 2 === 0) {
+            g.fillStyle = "rgba(255,255,255,0.018)";
+            g.fillRect(x, y, 16, 16);
+          }
+        }
+      }
+
+      for (let col = 0; col < LOOKS.length; col += 1) {
+        for (let row = 0; row < ROWS.length; row += 1) {
+          const [label, opts] = ROWS[row];
+          const { canvas: sprite, g: sg } = makeCanvas(16, 32);
+          drawCharacter(sg, 8, 30, LOOKS[col], opts);
+          const x = (col * CELL_W + 7) * SCALE;
+          const y = (row * CELL_H + 8) * SCALE;
+          g.drawImage(sprite, x, y, 16 * SCALE, 32 * SCALE);
+          g.fillStyle = "#7f8798";
+          g.font = "10px monospace";
+          g.fillText(label, (col * CELL_W + 2) * SCALE, (row * CELL_H + 2) * SCALE);
+          g.fillStyle = "#4d566b";
+          g.fillText(`${col}`, (col * CELL_W + 26) * SCALE, (row * CELL_H + 2) * SCALE);
+        }
+      }
+    </script>
+  </body>
+</html>

@@ -1,27 +1,23 @@
-/**
- * opencode-pixel dashboard (phase 1).
- * Renders office state from the SSE stream: one desk per session, one character per agent.
- */
+import { createOffice } from "./renderer.js";
+import { SCENE } from "./art/scene.js";
 
 const canvas = document.getElementById("office");
-const ctx = canvas.getContext("2d");
 const statsEl = document.getElementById("stats");
 const connEl = document.getElementById("conn");
 const emptyEl = document.getElementById("empty");
+const hintEl = document.getElementById("hint");
+const labelsEl = document.getElementById("labels");
+const hitsEl = document.getElementById("hits");
+const rosterEl = document.getElementById("roster");
+const toggleEl = document.getElementById("toggle-names");
+const cardEl = document.getElementById("agent-card");
+const cardStatus = document.getElementById("card-status");
+const cardProject = document.getElementById("card-project");
+const cardTitle = document.getElementById("card-title");
+const cardMeta = document.getElementById("card-meta");
+const cardNow = document.getElementById("card-now");
 
-const TILE = 24;
-const DESK_W = TILE * 5;
-const DESK_H = TILE * 4;
-const PAD = TILE * 2;
-
-const STATUS_COLORS = {
-  idle: "#6c7490",
-  thinking: "#e8b45f",
-  tool: "#63a8f0",
-  waiting: "#f4695f",
-  done: "#7fd18b",
-  error: "#f4695f",
-};
+const office = createOffice(canvas);
 
 const STATUS_LABEL = {
   idle: "idle",
@@ -33,250 +29,251 @@ const STATUS_LABEL = {
 };
 
 let snapshot = { agents: [], stats: { sessions: 0, working: 0, waiting: 0, errors: 0 } };
-let connected = false;
-let start = performance.now();
+let live = false;
+let hoveredID = null;
+let entriesByID = new Map();
+let rosterSignature = "";
+const labelNodes = new Map();
+const hitNodes = new Map();
+
+function renderStats() {
+  const { sessions, working, waiting, errors } = snapshot.stats;
+  const hidden = office.hidden;
+  statsEl.innerHTML =
+    `<span><b>${sessions}</b>session${sessions === 1 ? "" : "s"}</span>` +
+    `<span><b>${working}</b>working</span>` +
+    `<span${waiting ? ' class="warn"' : ""}><b>${waiting}</b>waiting</span>` +
+    (errors ? `<span class="warn"><b>${errors}</b>error${errors === 1 ? "" : "s"}</span>` : "");
+  emptyEl.classList.toggle("hidden", sessions > 0);
+  hintEl.textContent = hidden > 0 ? `+${hidden} session${hidden === 1 ? "" : "s"} hidden` : "";
+}
+
+function labelFor(entry) {
+  return entry.project || entry.agent.slug || "session";
+}
+
+function cardMetaText(agent) {
+  const parts = [];
+  if (agent.parentID) parts.push("subagent");
+  if (agent.agent) parts.push(agent.agent);
+  if (agent.model) parts.push(agent.model);
+  if (agent.tokens) {
+    const total = (agent.tokens.input ?? 0) + (agent.tokens.output ?? 0);
+    if (total > 0) parts.push(`${Math.round(total / 1000)}k tokens`);
+  }
+  return parts.join(" · ") || agent.sessionID;
+}
+
+function cardNowText(agent) {
+  if (agent.status === "waiting") {
+    const action = agent.permission?.action;
+    return action ? `Waiting for permission: ${action}` : agent.statusText || "Waiting for your input";
+  }
+  if (agent.status === "tool") {
+    const tool = agent.tool?.name;
+    return tool ? `${tool} · ${agent.statusText || "running"}` : agent.statusText || "Running a tool";
+  }
+  return agent.statusText || STATUS_LABEL[agent.status] || "";
+}
+
+function fillCard(entry) {
+  const agent = entry.agent;
+  cardStatus.textContent = STATUS_LABEL[agent.status] ?? agent.status;
+  cardProject.textContent = entry.project;
+  cardTitle.textContent = agent.title || agent.slug || "Untitled session";
+  cardMeta.textContent = cardMetaText(agent);
+  cardNow.textContent = cardNowText(agent);
+}
+
+function positionCard(node) {
+  const rect = node.getBoundingClientRect();
+  const width = cardEl.offsetWidth || 260;
+  const height = cardEl.offsetHeight || 120;
+  const margin = 12;
+  const center = rect.left + rect.width / 2;
+  const left = Math.min(Math.max(margin, center - width / 2), window.innerWidth - width - margin);
+  const above = rect.top - 8 - height;
+  const top = above > margin ? above : rect.bottom + 8;
+  cardEl.style.left = `${Math.round(left)}px`;
+  cardEl.style.top = `${Math.round(top)}px`;
+}
+
+function showCard(sessionID, node) {
+  const entry = entriesByID.get(sessionID);
+  if (!entry) return;
+  hoveredID = sessionID;
+  fillCard(entry);
+  cardEl.className = `agent-card status-${entry.agent.status}`;
+  cardEl.hidden = false;
+  positionCard(node);
+}
+
+function hideCard() {
+  hoveredID = null;
+  cardEl.hidden = true;
+}
+
+function bindHover(node) {
+  const id = () => node.dataset.sessionID;
+  node.addEventListener("mouseenter", () => showCard(id(), node));
+  node.addEventListener("mouseleave", hideCard);
+  node.addEventListener("focus", () => showCard(id(), node));
+  node.addEventListener("blur", hideCard);
+  node.addEventListener("click", (event) => {
+    event.stopPropagation();
+    showCard(id(), node);
+  });
+}
+
+function ensureLabel(entry) {
+  let node = labelNodes.get(entry.sessionID);
+  if (node) return node;
+  node = document.createElement("div");
+  node.className = "agent-label";
+  node.tabIndex = 0;
+  node.dataset.sessionID = entry.sessionID;
+  node.innerHTML = '<span class="label-dot"></span><span class="label-name"></span>';
+  bindHover(node);
+  labelsEl.append(node);
+  labelNodes.set(entry.sessionID, node);
+  return node;
+}
+
+function ensureHit(entry) {
+  let node = hitNodes.get(entry.sessionID);
+  if (node) return node;
+  node = document.createElement("div");
+  node.className = "desk-hit";
+  node.dataset.sessionID = entry.sessionID;
+  bindHover(node);
+  hitsEl.append(node);
+  hitNodes.set(entry.sessionID, node);
+  return node;
+}
+
+function renderLabels(entries, seen) {
+  for (const entry of entries) {
+    seen.add(`label:${entry.sessionID}`);
+    const node = ensureLabel(entry);
+    node.className = `agent-label status-${entry.agent.status}${entry.subagent ? " is-sub" : ""}`;
+    node.style.left = `${(entry.label.x / SCENE.w) * 100}%`;
+    node.style.top = `${(entry.label.y / SCENE.h) * 100}%`;
+    node.querySelector(".label-name").textContent = labelFor(entry);
+    node.setAttribute("aria-label", `${entry.project}: ${STATUS_LABEL[entry.agent.status] ?? entry.agent.status}`);
+  }
+  for (const [sessionID, node] of labelNodes) {
+    if (seen.has(`label:${sessionID}`)) continue;
+    node.remove();
+    labelNodes.delete(sessionID);
+  }
+}
+
+function renderHits(entries, seen) {
+  for (const entry of entries) {
+    seen.add(`hit:${entry.sessionID}`);
+    const node = ensureHit(entry);
+    const d = entry.desk;
+    node.style.left = `${((d.x - 6) / SCENE.w) * 100}%`;
+    node.style.top = `${((d.y - 16) / SCENE.h) * 100}%`;
+    node.style.width = `${((d.w + 22) / SCENE.w) * 100}%`;
+    node.style.height = `${((d.h + 46) / SCENE.h) * 100}%`;
+  }
+  for (const [sessionID, node] of hitNodes) {
+    if (seen.has(`hit:${sessionID}`)) continue;
+    node.remove();
+    hitNodes.delete(sessionID);
+  }
+}
+
+function renderRoster(entries) {
+  const signature = entries
+    .map((e) => `${e.sessionID}:${e.agent.status}:${e.subagent ? 1 : 0}:${labelFor(e)}`)
+    .join("|");
+  if (signature === rosterSignature) return;
+  rosterSignature = signature;
+  rosterEl.replaceChildren(
+    ...entries.map((entry) => {
+      const chip = document.createElement("div");
+      chip.className = `roster-chip status-${entry.agent.status}${entry.subagent ? " is-sub" : ""}`;
+      chip.tabIndex = 0;
+      chip.dataset.sessionID = entry.sessionID;
+      chip.setAttribute("aria-label", `${entry.project}: ${STATUS_LABEL[entry.agent.status] ?? entry.agent.status}`);
+      chip.innerHTML = '<span class="label-dot"></span><span class="chip-name"></span>';
+      chip.querySelector(".chip-name").textContent = labelFor(entry);
+      bindHover(chip);
+      return chip;
+    }),
+  );
+}
+
+function renderOverlay() {
+  const entries = office
+    .layout()
+    .slice()
+    .sort((a, b) => a.desk.id - b.desk.id);
+  entriesByID = new Map(entries.map((entry) => [entry.sessionID, entry]));
+  const seen = new Set();
+  renderLabels(entries, seen);
+  renderHits(entries, seen);
+  renderRoster(entries);
+
+  if (hoveredID) {
+    const entry = entriesByID.get(hoveredID);
+    if (!entry) {
+      hideCard();
+    } else {
+      fillCard(entry);
+      cardEl.className = `agent-card status-${entry.agent.status}`;
+      const anchor = labelNodes.get(hoveredID) ?? hitNodes.get(hoveredID);
+      if (anchor) positionCard(anchor);
+    }
+  }
+}
+
+function apply(next) {
+  snapshot = next;
+  office.setState(next);
+  renderStats();
+  renderOverlay();
+}
 
 function connect() {
   const source = new EventSource("/events");
   source.addEventListener("state", (event) => {
-    snapshot = JSON.parse(event.data);
-    if (!connected) {
-      connected = true;
-      connEl.textContent = "live";
-      connEl.classList.add("live");
+    try {
+      apply(JSON.parse(event.data));
+    } catch {
+      return;
     }
-    renderStats();
+    if (!live) {
+      live = true;
+      connEl.classList.add("live");
+      connEl.innerHTML = "<i></i> live";
+    }
   });
   source.addEventListener("error", () => {
-    connected = false;
-    connEl.textContent = "reconnecting…";
+    live = false;
     connEl.classList.remove("live");
+    connEl.innerHTML = "<i></i> reconnecting";
   });
 }
 
-function renderStats() {
-  const { sessions, working, waiting, errors } = snapshot.stats;
-  const visible = pickVisible(snapshot.agents ?? []).length;
-  const hidden = Math.max(0, sessions - visible);
-  statsEl.innerHTML =
-    `<span><b>${sessions}</b> sessions</span>` +
-    `<span><b>${working}</b> working</span>` +
-    `<span><b>${waiting}</b> waiting</span>` +
-    (errors > 0 ? `<span style="color:#f4695f"><b>${errors}</b> errors</span>` : "") +
-    (hidden > 0 ? `<span title="Only the most relevant sessions fit in the office">+<b>${hidden}</b> hidden</span>` : "");
-  emptyEl.classList.toggle("hidden", sessions > 0);
-}
+toggleEl.addEventListener("click", () => {
+  const on = document.body.classList.toggle("show-names");
+  toggleEl.setAttribute("aria-pressed", String(on));
+  hideCard();
+});
 
-function drawRoom() {
-  ctx.fillStyle = "#12151f";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // floor tiles
-  for (let y = 0; y < canvas.height; y += TILE) {
-    for (let x = 0; x < canvas.width; x += TILE) {
-      const odd = ((x / TILE) + (y / TILE)) % 2 === 0;
-      ctx.fillStyle = odd ? "#171b28" : "#141822";
-      ctx.fillRect(x, y, TILE, TILE);
-    }
-  }
-
-  // grid glow
-  ctx.strokeStyle = "rgba(255,255,255,0.03)";
-  ctx.lineWidth = 1;
-  for (let x = 0; x <= canvas.width; x += TILE) {
-    ctx.beginPath();
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, canvas.height);
-    ctx.stroke();
-  }
-  for (let y = 0; y <= canvas.height; y += TILE) {
-    ctx.beginPath();
-    ctx.moveTo(0, y + 0.5);
-    ctx.lineTo(canvas.width, y + 0.5);
-    ctx.stroke();
-  }
-}
-
-function deskSlot(index) {
-  const perRow = Math.max(1, Math.floor((canvas.width - PAD) / (DESK_W + PAD)));
-  const col = index % perRow;
-  const row = Math.floor(index / perRow);
-  return {
-    x: PAD + col * (DESK_W + PAD),
-    y: PAD + row * (DESK_H + PAD * 1.6),
+if (new URLSearchParams(window.location.search).has("debug")) {
+  window.__opencodePixel = {
+    apply,
+    current: () => snapshot,
+    office,
   };
 }
 
-function slotCount() {
-  const cols = Math.max(1, Math.floor((canvas.width - PAD) / (DESK_W + PAD)));
-  const rows = Math.max(1, Math.floor((canvas.height - PAD) / (DESK_H + PAD * 1.6)) + 1);
-  return cols * rows;
-}
-
-/**
- * The office has room for a handful of desks. Show every agent that is doing something,
- * then fill the rest with the most recent idle sessions (stable order by first sighting).
- */
-function pickVisible(agents) {
-  const capacity = slotCount();
-  if (agents.length <= capacity) return agents;
-  const priority = (agent) => (agent.status === "idle" ? 1 : 0);
-  const selected = new Set(
-    [...agents]
-      .sort((a, b) => priority(a) - priority(b) || b.lastEventAt - a.lastEventAt)
-      .slice(0, capacity)
-      .map((agent) => agent.sessionID),
-  );
-  return agents.filter((agent) => selected.has(agent.sessionID));
-}
-
-function drawDesk(slot) {
-  const { x, y } = slot;
-  ctx.fillStyle = "#2b3247";
-  ctx.fillRect(x + 6, y + TILE * 2.4, DESK_W - 12, TILE * 0.9);
-  ctx.fillStyle = "#3a4260";
-  ctx.fillRect(x + 6, y + TILE * 2.4, DESK_W - 12, TILE * 0.35);
-
-  // monitor
-  ctx.fillStyle = "#1b2030";
-  ctx.fillRect(x + DESK_W / 2 - 22, y + TILE * 0.9, 44, TILE * 1.5);
-  ctx.fillStyle = "#0e1119";
-  ctx.fillRect(x + DESK_W / 2 - 19, y + TILE * 1.05, 38, TILE * 1.2);
-}
-
-function drawScreen(slot, agent, time) {
-  const { x, y } = slot;
-  const lit = agent.status === "tool" || agent.status === "thinking";
-  ctx.fillStyle = lit ? "#2c4a6b" : "#151a26";
-  ctx.fillRect(x + DESK_W / 2 - 19, y + TILE * 1.05, 38, TILE * 1.2);
-  if (!lit) return;
-  ctx.fillStyle = "#7fb6ff";
-  const lines = 4;
-  for (let i = 0; i < lines; i += 1) {
-    const phase = Math.sin(time / 220 + i * 1.3) * 0.5 + 0.5;
-    const w = 8 + phase * 26;
-    ctx.fillRect(x + DESK_W / 2 - 15, y + TILE * 1.2 + i * 5, w, 2);
-  }
-}
-
-function drawCharacter(slot, agent, time) {
-  const { x, y } = slot;
-  const bob = Math.sin(time / 300 + agent.sessionID.length) * 1.5;
-  const cx = x + DESK_W / 2;
-  const cy = y + TILE * 2.4 + bob;
-  const body = STATUS_COLORS[agent.status] ?? STATUS_COLORS.idle;
-  const sub = Boolean(agent.parentID);
-  const scale = sub ? 0.8 : 1;
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale(scale, scale);
-
-  // head
-  ctx.fillStyle = "#f0c9a8";
-  ctx.fillRect(-6, -18, 12, 10);
-  // hair
-  ctx.fillStyle = "#3a2a22";
-  ctx.fillRect(-7, -20, 14, 4);
-  // body
-  ctx.fillStyle = body;
-  ctx.fillRect(-7, -8, 14, 12);
-  // arms typing when working
-  ctx.fillStyle = "#f0c9a8";
-  const typing = agent.status === "tool" || agent.status === "thinking";
-  const arm = typing ? Math.sin(time / 90) * 1.6 : 0;
-  ctx.fillRect(-11, -5 + arm, 4, 4);
-  ctx.fillRect(7, -5 - arm, 4, 4);
-  // legs
-  ctx.fillStyle = "#26304a";
-  ctx.fillRect(-6, 4, 5, 5);
-  ctx.fillRect(1, 4, 5, 5);
-
-  ctx.restore();
-}
-
-function wrapText(text, max) {
-  const words = String(text ?? "").split(/\s+/);
-  const lines = [];
-  let line = "";
-  for (const word of words) {
-    if ((line + " " + word).trim().length > max) {
-      if (line) lines.push(line);
-      line = word;
-    } else {
-      line = (line + " " + word).trim();
-    }
-  }
-  if (line) lines.push(line);
-  return lines.slice(0, 2);
-}
-
-function projectName(agent) {
-  const dir = String(agent.directory || "").replace(/[\\/]+$/, "");
-  const parts = dir.split(/[\\/]/);
-  return parts[parts.length - 1] || "";
-}
-
-function drawLabel(slot, agent) {
-  const { x, y } = slot;
-  const title = agent.title || agent.slug || projectName(agent) || agent.sessionID.slice(0, 12);
-  ctx.font = "11px 'Segoe UI', system-ui, sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillStyle = "rgba(230,232,239,0.9)";
-  ctx.fillText(title.slice(0, 22), x + DESK_W / 2, y + TILE * 3.9);
-  ctx.fillStyle = "rgba(139,144,163,0.9)";
-  const project = projectName(agent);
-  const status = STATUS_LABEL[agent.status] ?? agent.status;
-  const subtitle = project && project !== title ? `${status} · ${project}` : status;
-  ctx.fillText(subtitle.slice(0, 26), x + DESK_W / 2, y + TILE * 4.6);
-  ctx.textAlign = "left";
-}
-
-function drawBubble(slot, agent, time) {
-  if (agent.status !== "waiting" && agent.status !== "error" && agent.status !== "done") return;
-  const { x, y } = slot;
-  const lines = wrapText(agent.statusText, 26);
-  const w = Math.max(120, Math.max(...lines.map((l) => l.length)) * 6.4 + 18);
-  const h = 16 + lines.length * 13;
-  const bx = x + DESK_W / 2 - w / 2;
-  const by = y - h - 2 + Math.sin(time / 260) * 1.5;
-  const color = agent.status === "done" ? "#7fd18b" : agent.status === "waiting" ? "#f4695f" : "#f4695f";
-
-  ctx.fillStyle = "rgba(20,24,34,0.96)";
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.roundRect(bx, by, w, h, 6);
-  ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(x + DESK_W / 2 - 5, by + h);
-  ctx.lineTo(x + DESK_W / 2 + 5, by + h);
-  ctx.lineTo(x + DESK_W / 2, by + h + 6);
-  ctx.closePath();
-  ctx.fillStyle = "rgba(20,24,34,0.96)";
-  ctx.fill();
-
-  ctx.fillStyle = color;
-  ctx.font = "11px 'Segoe UI', system-ui, sans-serif";
-  lines.forEach((line, index) => {
-    ctx.fillText(line, bx + 9, by + 14 + index * 13);
-  });
-}
-
-function draw(time) {
-  drawRoom();
-  const agents = pickVisible(snapshot.agents ?? []);
-  agents.forEach((agent, index) => {
-    const slot = deskSlot(index);
-    drawDesk(slot);
-    drawScreen(slot, agent, time);
-    drawCharacter(slot, agent, time);
-    drawLabel(slot, agent);
-    drawBubble(slot, agent, time);
-  });
-  requestAnimationFrame(draw);
-}
+window.addEventListener("scroll", hideCard, { passive: true });
+window.addEventListener("resize", hideCard);
+document.addEventListener("click", hideCard);
 
 connect();
-requestAnimationFrame(draw);

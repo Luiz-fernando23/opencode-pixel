@@ -7,18 +7,53 @@
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <header>
-      <h1><span class="logo">▚</span> opencode-pixel</h1>
+    <header class="hud">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">▚</span>
+        <span>opencode<span class="slash">/</span>pixel</span>
+      </div>
       <div class="stats" id="stats"></div>
-      <div class="conn" id="conn">connecting…</div>
+      <div class="status">
+        <button class="toggle" id="toggle-names" type="button" aria-pressed="false">names</button>
+        <span class="conn" id="conn"><i></i> connecting</span>
+      </div>
     </header>
+
     <main>
-      <canvas id="office" width="960" height="540"></canvas>
-      <p class="empty" id="empty">
-        Waiting for an OpenCode session…<br />
-        <small>Start an agent in any project on this machine and it will appear here.</small>
-      </p>
+      <div class="frame">
+        <div class="scene">
+          <canvas id="office" aria-label="Pixel-art office with the active OpenCode sessions"></canvas>
+          <div class="hits" id="hits"></div>
+          <div class="labels" id="labels"></div>
+        </div>
+        <div class="empty hidden" id="empty">
+          <b>Quiet office</b>
+          <span>Start an agent in any project and it will sit down here.</span>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="dot idle"></i>idle</span>
+        <span><i class="dot thinking"></i>thinking</span>
+        <span><i class="dot tool"></i>working</span>
+        <span><i class="dot waiting"></i>needs you</span>
+        <span><i class="dot done"></i>done</span>
+        <span><i class="dot error"></i>error</span>
+        <span class="hint" id="hint"></span>
+      </div>
+      <div class="roster" id="roster" aria-label="Active sessions"></div>
     </main>
+
+    <div class="agent-card" id="agent-card" hidden>
+      <div class="card-head">
+        <span class="card-dot" id="card-dot"></span>
+        <span class="card-status" id="card-status"></span>
+        <span class="card-project" id="card-project"></span>
+      </div>
+      <div class="card-title" id="card-title"></div>
+      <div class="card-meta" id="card-meta"></div>
+      <div class="card-now" id="card-now"></div>
+    </div>
+
     <script type="module" src="/app.js"></script>
   </body>
 </html>

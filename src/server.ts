@@ -58,20 +58,52 @@ async function probe(port: number): Promise<"office" | "taken" | "free"> {
   })
 }
 
+const ASSET_TYPES = new Map<string, string>([
+  [".html", "text/html; charset=utf-8"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".css", "text/css; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".svg", "image/svg+xml"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+  [".ico", "image/x-icon"],
+  [".woff2", "font/woff2"],
+  [".txt", "text/plain; charset=utf-8"],
+])
+
+interface Asset {
+  file: string
+  type: string
+}
+
+function resolveAsset(root: string, route: string): Asset | null {
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(route)
+  } catch {
+    return null
+  }
+  if (decoded.includes("\0")) return null
+  const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "")
+  if (!relative) return null
+
+  // Resolve inside web/ only: a crafted ../../ route must not escape the package.
+  const absolute = path.resolve(root, relative)
+  if (absolute !== root && !absolute.startsWith(root + path.sep)) return null
+
+  try {
+    if (!fs.statSync(absolute).isFile()) return null
+  } catch {
+    return null
+  }
+  return { file: absolute, type: ASSET_TYPES.get(path.extname(absolute).toLowerCase()) ?? "application/octet-stream" }
+}
+
 export async function startServer(options: OfficeServerOptions): Promise<OfficeServerHandle | null> {
   const { store, version, log } = options
   const root = webDir()
-  const files = new Map<string, { file: string; type: string }>()
-  for (const [route, file, type] of [
-    ["/", "index.html", "text/html; charset=utf-8"],
-    ["/index.html", "index.html", "text/html; charset=utf-8"],
-    ["/app.js", "app.js", "text/javascript; charset=utf-8"],
-    ["/style.css", "style.css", "text/css; charset=utf-8"],
-  ] as const) {
-    const absolute = path.join(root, file)
-    if (fs.existsSync(absolute)) files.set(route, { file: absolute, type })
-  }
-  if (!files.has("/index.html")) {
+  if (!fs.existsSync(path.join(root, "index.html"))) {
     log(`dashboard assets not found in ${root}`)
     return null
   }
@@ -161,12 +193,17 @@ export async function startServer(options: OfficeServerOptions): Promise<OfficeS
       return
     }
 
-    const file = files.get(route)
-    if (file) {
+    const asset = resolveAsset(root, route)
+    if (asset) {
       try {
-        const body = fs.readFileSync(file.file)
-        response.writeHead(200, { "content-type": file.type, "cache-control": "no-store" })
-        response.end(body)
+        const body = fs.readFileSync(asset.file)
+        response.writeHead(200, {
+          "content-type": asset.type,
+          "content-length": body.byteLength,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        })
+        response.end(request.method === "HEAD" ? undefined : body)
       } catch {
         response.writeHead(500, { "content-type": "text/plain" })
         response.end("asset missing")

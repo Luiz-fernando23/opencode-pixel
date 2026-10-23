@@ -1,6 +1,6 @@
 {
   "name": "opencode-pixel",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Pixel-art office dashboard that visualizes OpenCode agents in real time",
   "type": "module",
   "license": "MIT",
