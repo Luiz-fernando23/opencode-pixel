@@ -42,7 +42,9 @@ const agents = titles.map((title, i) => ({
   directory: dirs[i],
   title,
   slug: title.toLowerCase().replace(/[^a-z]+/g, "-"),
-  agent: "build",
+  // One demo session is a subagent so the diamond marker and extra desk are visible.
+  parentID: i === 3 ? "ses_demo_0" : undefined,
+  agent: i === 3 ? "explore" : "build",
   model: "opencode/deepseek-v4.1-flash-free",
   status: statuses[i],
   statusText:

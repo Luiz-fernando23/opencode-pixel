@@ -1,6 +1,10 @@
 /**
  * Office renderer: static scene + dynamic agents. The scene is drawn at 1x into an
  * offscreen canvas and blitted at an integer scale, so pixels stay square.
+ *
+ * Only sessions that are doing something (working, thinking, waiting for permission,
+ * error) get an avatar. Idle sessions are invisible; finished sessions celebrate for a
+ * few seconds and then walk out. That keeps the office empty until an agent is called.
  */
 import { P } from "./art/palette.js";
 import { makeCanvas, rect, hline, px, dither } from "./art/draw.js";
@@ -18,25 +22,29 @@ const STATUS = {
   error: { color: P.red, label: "error" },
 };
 
-const CAPACITY = LAYOUT.desks.length;
-const WALK_SPEED = 52; // art pixels per second
+const ACTIVE_STATUSES = new Set(["tool", "thinking", "waiting", "error"]);
+const WALK_SPEED = 72; // art pixels per second
+const EXIT_SPEED = 112;
+const DONE_SHOW_MS = 4200;
+const ENTER_STAGGER_MS = 380;
 
 function projectName(agent) {
   const dir = String(agent.directory ?? "").replace(/[\\/]+$/, "");
   return dir.split(/[\\/]/).pop() || "";
 }
 
-function pickVisible(agents) {
-  if (agents.length <= CAPACITY) return agents;
-  // Top-level sessions get desks first; subagents only fill spare seats.
-  const rank = (a) => (a.parentID ? 4 : a.status === "idle" ? 2 : a.status === "done" ? 1 : 0);
-  const keep = new Set(
-    [...agents]
-      .sort((a, b) => rank(a) - rank(b) || b.lastEventAt - a.lastEventAt)
-      .slice(0, CAPACITY)
-      .map((a) => a.sessionID),
-  );
-  return agents.filter((a) => keep.has(a.sessionID));
+function statusRank(agent) {
+  const base =
+    agent.status === "waiting" || agent.status === "error"
+      ? 0
+      : agent.status === "tool" || agent.status === "thinking"
+        ? 1
+        : 2;
+  return base * 2 + (agent.parentID ? 1 : 0);
+}
+
+function isCandidate(agent) {
+  return ACTIVE_STATUSES.has(agent.status) || agent.status === "done";
 }
 
 function drawScreen(g, d, agent, time) {
@@ -165,8 +173,24 @@ function sameTarget(a, b) {
  * the runner to its desk. Row 1 walks up to the chair; row 2 loops around the
  * desk through the gap so it never walks over the furniture.
  */
+function studioPath(d, target) {
+  const path = [{ x: d.x + 72, y: 166 }];
+  if (d.id < 4) {
+    path.push({ x: d.x + 72, y: target.y });
+    path.push({ x: target.x, y: target.y });
+  } else if (target.mode === "seated") {
+    path.push({ x: d.x + 72, y: 238 });
+    path.push({ x: d.x + 32, y: 238 });
+    path.push({ x: target.x, y: target.y });
+  } else {
+    path.push({ x: d.x + 72, y: target.y });
+    path.push({ x: target.x, y: target.y });
+  }
+  return path;
+}
+
 function entryPath(d, target) {
-  const path = [
+  return [
     { x: 560, y: 326 },
     { x: 540, y: 322 },
     { x: 500, y: 322 },
@@ -175,21 +199,51 @@ function entryPath(d, target) {
     { x: 360, y: 226 },
     { x: 350, y: 206 },
     { x: 350, y: 166 },
+    ...studioPath(d, target),
   ];
-  if (d.id < 4) {
-    path.push({ x: d.x + 72, y: 166 });
-    path.push({ x: d.x + 72, y: target.y });
-    path.push({ x: target.x, y: target.y });
-  } else if (target.mode === "seated") {
-    path.push({ x: d.x + 72, y: 166 });
-    path.push({ x: d.x + 72, y: 238 });
-    path.push({ x: d.x + 32, y: 238 });
-    path.push({ x: target.x, y: target.y });
-  } else {
-    path.push({ x: d.x + 72, y: 166 });
-    path.push({ x: d.x + 72, y: target.y });
-    path.push({ x: target.x, y: target.y });
+}
+
+/** Keep a mid-entry agent on the safe aisle route when its status changes. */
+function routeToTarget(d, target, m) {
+  if (m.x > 384) {
+    return [
+      { x: 390, y: 226 },
+      { x: 360, y: 226 },
+      { x: 350, y: 206 },
+      { x: 350, y: 166 },
+      ...studioPath(d, target),
+    ];
   }
+  return [{ x: target.x, y: target.y }];
+}
+
+/** Reverse route out of the studio, through the lounge and back to the entry mat. */
+function exitPath(d, m) {
+  if (m.x > 384) {
+    const path = [];
+    if (m.x < 500) path.push({ x: 500, y: m.y });
+    if (m.y < 322) path.push({ x: 500, y: 322 });
+    path.push({ x: 540, y: 322 }, { x: 560, y: 326 });
+    return path;
+  }
+  const path = [];
+  if (d.id < 4) {
+    path.push({ x: d.x + 72, y: m.y });
+    path.push({ x: d.x + 72, y: 166 });
+  } else {
+    path.push({ x: d.x + 72, y: 238 });
+    path.push({ x: d.x + 72, y: 166 });
+  }
+  path.push(
+    { x: 350, y: 166 },
+    { x: 350, y: 206 },
+    { x: 360, y: 226 },
+    { x: 390, y: 226 },
+    { x: 500, y: 226 },
+    { x: 500, y: 322 },
+    { x: 540, y: 322 },
+    { x: 560, y: 326 },
+  );
   return path;
 }
 
@@ -200,11 +254,27 @@ function snapMotion(m, target) {
   m.mode = target.mode;
   m.path = [];
   m.dir = target.mode === "seated" ? "up" : "down";
+  m.speed = WALK_SPEED;
+  m.exiting = false;
+  m.returning = false;
 }
 
-function createMotion(d, target, initial) {
-  if (initial) {
-    return { x: target.x, y: target.y, mode: target.mode, target, path: [], dir: target.mode === "seated" ? "up" : "down", seatID: d.id, walkFrame: 1 };
+function createMotion(d, target, enterAt, reduced) {
+  if (reduced) {
+    return {
+      x: target.x,
+      y: target.y,
+      mode: target.mode,
+      target,
+      path: [],
+      dir: target.mode === "seated" ? "up" : "down",
+      seatID: d.id,
+      walkFrame: 1,
+      enterAt: 0,
+      speed: WALK_SPEED,
+      exiting: false,
+      returning: false,
+    };
   }
   return {
     x: LAYOUT.spawn.x,
@@ -215,6 +285,10 @@ function createMotion(d, target, initial) {
     dir: "up",
     seatID: d.id,
     walkFrame: 1,
+    enterAt,
+    speed: WALK_SPEED,
+    exiting: false,
+    returning: false,
   };
 }
 
@@ -261,7 +335,7 @@ function drawAgent(g, d, agent, m, time) {
       dir: "down",
       pose: agent.status === "done" ? "cheer" : "wave",
     });
-    if (agent.parentID) drawSubagentMark(g, x, y - 26);
+    if (agent.parentID) drawSubagentMark(g, x, y - 40);
     bubble(g, x, y - 24, agent.status === "done" ? "done" : "waiting");
     return;
   }
@@ -283,10 +357,11 @@ function drawAgent(g, d, agent, m, time) {
   if (agent.status === "idle") bubble(g, x, y - 24, "idle");
 }
 
-function updateMotions(motions, dt, time) {
+function updateMotions(motions, dt, time, onArrive) {
   for (const m of motions.values()) {
     if (m.mode !== "walking") continue;
-    let remaining = WALK_SPEED * dt;
+    if (m.enterAt && time < m.enterAt) continue;
+    let remaining = (m.speed ?? WALK_SPEED) * dt;
     let guard = 0;
     while (remaining > 0 && m.path.length && guard < 64) {
       guard += 1;
@@ -311,10 +386,15 @@ function updateMotions(motions, dt, time) {
       }
     }
     if (!m.path.length) {
+      if (m.exiting) {
+        m.mode = "gone";
+        continue;
+      }
       m.x = m.target.x;
       m.y = m.target.y;
       m.mode = m.target.mode;
       m.dir = m.target.mode === "seated" ? "up" : "down";
+      onArrive(m);
     }
     m.walkFrame = Math.floor(time / 130) % 2 ? 1 : 3;
   }
@@ -331,91 +411,274 @@ export function createOffice(canvas) {
   const { canvas: buffer, g: bg } = makeCanvas(SCENE.w, SCENE.h);
 
   let snapshot = { agents: [], stats: { sessions: 0, working: 0, waiting: 0, errors: 0 } };
-  let visible = [];
+  let agentByID = new Map();
+  let active = [];
   let hidden = 0;
   let initialized = false;
   let seatOf = new Map();
   const motions = new Map();
+  const doneTimers = new Map();
+  const forcedLeave = new Set();
+  let onChange = null;
   let lastTime = 0;
   const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
 
-  function setState(next) {
-    snapshot = next;
-    const picked = pickVisible(next.agents ?? []);
-    hidden = Math.max(0, (next.agents ?? []).length - picked.length);
-    const first = !initialized;
+  function clearDoneTimer(sessionID) {
+    const timer = doneTimers.get(sessionID);
+    if (timer) clearTimeout(timer);
+    doneTimers.delete(sessionID);
+  }
 
-    // stable seats: keep a session's desk while it is visible, then fill free desks
-    const nextSeat = new Map();
-    const used = new Set();
-    for (const agent of picked) {
-      const desk = seatOf.get(agent.sessionID);
-      if (desk && !used.has(desk.id)) {
-        nextSeat.set(agent.sessionID, desk);
-        used.add(desk.id);
+  function scheduleDone(sessionID) {
+    if (doneTimers.has(sessionID) || forcedLeave.has(sessionID)) return;
+    const agent = agentByID.get(sessionID);
+    const m = motions.get(sessionID);
+    if (!agent || agent.status !== "done" || !m || m.mode !== "standing" || m.exiting) return;
+    const timer = setTimeout(() => {
+      doneTimers.delete(sessionID);
+      const current = agentByID.get(sessionID);
+      if (!current || current.status !== "done") return;
+      forcedLeave.add(sessionID);
+      sync();
+    }, DONE_SHOW_MS);
+    doneTimers.set(sessionID, timer);
+  }
+
+  function onArrive(m) {
+    if (m.exiting) return;
+    const agent = agentByID.get(m.sessionID);
+    if (agent?.status === "done") scheduleDone(m.sessionID);
+  }
+
+  function beginExit(m, d) {
+    m.exiting = true;
+    m.returning = false;
+    m.enterAt = 0;
+    m.speed = EXIT_SPEED;
+    m.mode = "walking";
+    m.target = { x: LAYOUT.spawn.x, y: LAYOUT.spawn.y, mode: "exit" };
+    m.path = exitPath(d, m);
+  }
+
+  function sync(first = false, emit = true) {
+    const now = performance.now();
+
+    // Finished sessions that turned idle, disappeared, or were pruned no longer need
+    // their celebration timer.
+    for (const [sessionID, timer] of [...doneTimers]) {
+      const agent = agentByID.get(sessionID);
+      if (!agent || agent.status !== "done") {
+        clearTimeout(timer);
+        doneTimers.delete(sessionID);
       }
     }
-    for (const agent of picked) {
+    for (const sessionID of [...forcedLeave]) {
+      const agent = agentByID.get(sessionID);
+      if (!agent || agent.status !== "done") forcedLeave.delete(sessionID);
+    }
+
+    // Drop avatars whose session vanished entirely.
+    for (const [sessionID, m] of [...motions]) {
+      if (agentByID.has(sessionID)) continue;
+      motions.delete(sessionID);
+      seatOf.delete(sessionID);
+      clearDoneTimer(sessionID);
+      forcedLeave.delete(sessionID);
+    }
+
+    // With reduced motion there is no exit walk; remove inactive avatars before
+    // assigning desks so a hidden active session can take the freed chair at once.
+    if (reduced) {
+      for (const [sessionID, m] of [...motions]) {
+        const agent = agentByID.get(sessionID);
+        if (agent && isCandidate(agent) && !forcedLeave.has(sessionID)) continue;
+        motions.delete(sessionID);
+        seatOf.delete(sessionID);
+        clearDoneTimer(sessionID);
+      }
+    }
+
+    const candidates = [...agentByID.values()]
+      .filter((agent) => isCandidate(agent) && !forcedLeave.has(agent.sessionID))
+      .sort((a, b) => statusRank(a) - statusRank(b) || b.lastEventAt - a.lastEventAt);
+
+    // A session that becomes active again while walking out returns to work instead.
+    for (const agent of candidates) {
+      const m = motions.get(agent.sessionID);
+      if (m?.exiting) {
+        m.exiting = false;
+        m.speed = WALK_SPEED;
+        m.returning = true;
+      }
+    }
+
+    const candidateIDs = new Set(candidates.map((agent) => agent.sessionID));
+    const nextSeat = new Map();
+    const used = new Set();
+
+    // Keep seats of sessions that are walking out; their chair is still theirs until
+    // they reach the door. This prevents a new arrival from sitting through them.
+    for (const [sessionID, m] of motions) {
+      if (candidateIDs.has(sessionID)) continue;
+      const d = seatOf.get(sessionID);
+      if (d && !used.has(d.id)) {
+        nextSeat.set(sessionID, d);
+        used.add(d.id);
+      }
+    }
+
+    // Stable desks for sessions that are already active.
+    for (const agent of candidates) {
+      const d = seatOf.get(agent.sessionID);
+      if (d && !used.has(d.id)) {
+        nextSeat.set(agent.sessionID, d);
+        used.add(d.id);
+      }
+    }
+
+    // New active sessions fill free desks; overflow stays in the lounge queue.
+    for (const agent of candidates) {
       if (nextSeat.has(agent.sessionID)) continue;
       const free = LAYOUT.desks.find((d) => !used.has(d.id));
       if (!free) break;
       nextSeat.set(agent.sessionID, free);
       used.add(free.id);
     }
+
     seatOf = nextSeat;
-    visible = picked.filter((a) => seatOf.has(a.sessionID));
+    active = candidates.filter((agent) => nextSeat.has(agent.sessionID));
+    hidden = candidates.length - active.length;
+    const activeIDs = new Set(active.map((agent) => agent.sessionID));
 
-    const alive = new Set(visible.map((agent) => agent.sessionID));
-    for (const id of [...motions.keys()]) {
-      if (!alive.has(id)) motions.delete(id);
-    }
-
-    for (const agent of visible) {
-      const d = seatOf.get(agent.sessionID);
-      const target = targetFor(agent, d);
-      let m = motions.get(agent.sessionID);
-      if (!m) {
-        m = createMotion(d, target, first || reduced);
-        motions.set(agent.sessionID, m);
+    // Everyone else with a desk is leaving the office.
+    for (const [sessionID, m] of motions) {
+      if (activeIDs.has(sessionID) || m.exiting) continue;
+      const agent = agentByID.get(sessionID);
+      const d = seatOf.get(sessionID);
+      if (!agent || !d) {
+        motions.delete(sessionID);
+        seatOf.delete(sessionID);
         continue;
       }
-      m.seatID = d.id;
-      if (!sameTarget(m.target, target)) {
-        m.target = target;
-        if (reduced) {
-          snapMotion(m, target);
-        } else {
-          m.path = [{ x: target.x, y: target.y }];
-          m.mode = "walking";
-        }
+      if (m.x >= 552 && m.y >= 318) {
+        motions.delete(sessionID);
+        seatOf.delete(sessionID);
+        continue;
       }
+      if (m.enterAt && m.enterAt > now) {
+        motions.delete(sessionID);
+        seatOf.delete(sessionID);
+        continue;
+      }
+      if (reduced) {
+        // Reduced motion: no walking exit animation. Drop the avatar at once.
+        motions.delete(sessionID);
+        seatOf.delete(sessionID);
+        clearDoneTimer(sessionID);
+        continue;
+      }
+      beginExit(m, d);
     }
 
-    initialized = true;
+    // Create/update the avatars that should be at a desk now. New arrivals are
+    // staggered so two sessions that get desks at the same moment do not overlap
+    // while walking through the doorway.
+    let newArrival = 0;
+    active.forEach((agent, index) => {
+      const d = seatOf.get(agent.sessionID);
+      if (!d) return;
+      const target = targetFor(agent, d);
+      let m = motions.get(agent.sessionID);
+
+      if (!m) {
+        const delayIndex = first ? index : newArrival;
+        newArrival += 1;
+        const enterAt = reduced ? 0 : now + delayIndex * ENTER_STAGGER_MS;
+        m = createMotion(d, target, enterAt, reduced);
+        m.sessionID = agent.sessionID;
+        motions.set(agent.sessionID, m);
+      } else {
+        m.seatID = d.id;
+        if (m.returning) {
+          m.returning = false;
+          m.target = target;
+          m.path = routeToTarget(d, target, m);
+          m.mode = "walking";
+          m.speed = WALK_SPEED;
+          m.exiting = false;
+        } else if (!sameTarget(m.target, target)) {
+          m.target = target;
+          if (reduced) {
+            snapMotion(m, target);
+          } else {
+            m.path = routeToTarget(d, target, m);
+            m.mode = "walking";
+            m.speed = WALK_SPEED;
+            m.exiting = false;
+          }
+        }
+      }
+
+      if (agent.status === "done" && m.mode === "standing") scheduleDone(agent.sessionID);
+    });
+
     if (reduced) draw(performance.now());
+    if (emit) onChange?.();
+  }
+
+  function cleanupGone() {
+    let changed = false;
+    for (const [sessionID, m] of [...motions]) {
+      if (m.mode !== "gone") continue;
+      motions.delete(sessionID);
+      seatOf.delete(sessionID);
+      clearDoneTimer(sessionID);
+      // Keep forcedLeave for a done session: a later snapshot may still report
+      // "done", and it must not walk back in after its celebration. sync() clears
+      // the marker as soon as the session changes status or disappears.
+      changed = true;
+    }
+    if (changed) sync();
+  }
+
+  function setState(next) {
+    snapshot = next;
+    agentByID = new Map((next.agents ?? []).map((agent) => [agent.sessionID, agent]));
+    const first = !initialized;
+    sync(first, false);
+    initialized = true;
     return { hidden };
   }
 
   function draw(time) {
     bg.drawImage(scene.canvas, 0, 0);
 
-    for (const agent of visible) {
+    for (const agent of active) {
       const d = seatOf.get(agent.sessionID);
+      const m = motions.get(agent.sessionID);
+      if (!d || !m || m.mode === "walking" || (m.enterAt && time < m.enterAt)) continue;
       drawGlow(bg, d, agent.status, time);
       drawScreen(bg, d, agent, time);
     }
 
-    // dynamic props and people share one y-sorted pass, so a chair in front of a
+    // Dynamic props and people share one y-sorted pass, so a chair in front of a
     // seated character covers their lower back while a standing character stays in front.
     const items = [];
-    for (const agent of visible) {
+    for (const agent of active) {
       const d = seatOf.get(agent.sessionID);
       const m = motions.get(agent.sessionID);
-      if (!m) continue;
+      if (!d || !m || (m.enterAt && time < m.enterAt)) continue;
       items.push({ base: m.y, order: 1, kind: "agent", agent, d, m });
     }
-    for (const agent of visible) {
-      const d = seatOf.get(agent.sessionID);
+    for (const m of motions.values()) {
+      if (!m.exiting) continue;
+      const agent = agentByID.get(m.sessionID);
+      const d = seatOf.get(m.sessionID);
+      if (!agent || !d || (m.enterAt && time < m.enterAt)) continue;
+      items.push({ base: m.y, order: 1, kind: "agent", agent, d, m });
+    }
+    // Empty desks still have their chairs; the room should not look unfinished.
+    for (const d of LAYOUT.desks) {
       items.push({ base: d.chair.y + 20, order: 0, kind: "chair", d });
     }
     items.sort((a, b) => a.base - b.base || a.order - b.order);
@@ -433,7 +696,8 @@ export function createOffice(canvas) {
   function frame(time) {
     const dt = lastTime ? Math.min(0.05, (time - lastTime) / 1000) : 0.016;
     lastTime = time;
-    if (!reduced) updateMotions(motions, dt, time);
+    if (!reduced) updateMotions(motions, dt, time, onArrive);
+    cleanupGone();
     draw(time);
     if (!reduced) requestAnimationFrame(frame);
   }
@@ -441,11 +705,14 @@ export function createOffice(canvas) {
   requestAnimationFrame(frame);
   return {
     setState,
+    set onChange(fn) {
+      onChange = fn;
+    },
     get hidden() {
       return hidden;
     },
     stats: () => snapshot.stats,
-    visibleCount: () => visible.length,
+    visibleCount: () => active.length,
     projectName,
     statuses: STATUS,
     motions: () =>
@@ -455,11 +722,12 @@ export function createOffice(canvas) {
         y: Math.round(m.y),
         mode: m.mode,
         dir: m.dir,
+        exiting: Boolean(m.exiting),
         path: m.path.map((p) => ({ x: p.x, y: p.y })),
         target: m.target,
       })),
     layout: () =>
-      visible.map((agent) => {
+      active.map((agent) => {
         const desk = seatOf.get(agent.sessionID);
         return {
           sessionID: agent.sessionID,

@@ -4,7 +4,6 @@ import { SCENE } from "./art/scene.js";
 const canvas = document.getElementById("office");
 const statsEl = document.getElementById("stats");
 const connEl = document.getElementById("conn");
-const emptyEl = document.getElementById("empty");
 const hintEl = document.getElementById("hint");
 const labelsEl = document.getElementById("labels");
 const hitsEl = document.getElementById("hits");
@@ -36,16 +35,25 @@ let rosterSignature = "";
 const labelNodes = new Map();
 const hitNodes = new Map();
 
-function renderStats() {
-  const { sessions, working, waiting, errors } = snapshot.stats;
+function renderStats(entries) {
+  const working = entries.filter((entry) => entry.agent.status === "tool" || entry.agent.status === "thinking").length;
+  const waiting = entries.filter((entry) => entry.agent.status === "waiting").length;
+  const errors = entries.filter((entry) => entry.agent.status === "error").length;
+  const done = entries.filter((entry) => entry.agent.status === "done").length;
+  const active = entries.length;
   const hidden = office.hidden;
   statsEl.innerHTML =
-    `<span><b>${sessions}</b>session${sessions === 1 ? "" : "s"}</span>` +
+    `<span><b>${active}</b>active</span>` +
     `<span><b>${working}</b>working</span>` +
     `<span${waiting ? ' class="warn"' : ""}><b>${waiting}</b>waiting</span>` +
+    (done ? `<span><b>${done}</b>done</span>` : "") +
     (errors ? `<span class="warn"><b>${errors}</b>error${errors === 1 ? "" : "s"}</span>` : "");
-  emptyEl.classList.toggle("hidden", sessions > 0);
-  hintEl.textContent = hidden > 0 ? `+${hidden} session${hidden === 1 ? "" : "s"} hidden` : "";
+  hintEl.textContent =
+    hidden > 0
+      ? `+${hidden} active hidden`
+      : active === 0
+        ? "quiet office · agents appear when working"
+        : "";
 }
 
 function labelFor(entry) {
@@ -206,11 +214,7 @@ function renderRoster(entries) {
   );
 }
 
-function renderOverlay() {
-  const entries = office
-    .layout()
-    .slice()
-    .sort((a, b) => a.desk.id - b.desk.id);
+function renderOverlay(entries) {
   entriesByID = new Map(entries.map((entry) => [entry.sessionID, entry]));
   const seen = new Set();
   renderLabels(entries, seen);
@@ -230,11 +234,19 @@ function renderOverlay() {
   }
 }
 
+function refreshUI() {
+  const entries = office
+    .layout()
+    .slice()
+    .sort((a, b) => a.desk.id - b.desk.id);
+  renderStats(entries);
+  renderOverlay(entries);
+}
+
 function apply(next) {
   snapshot = next;
   office.setState(next);
-  renderStats();
-  renderOverlay();
+  refreshUI();
 }
 
 function connect() {
@@ -276,4 +288,5 @@ window.addEventListener("scroll", hideCard, { passive: true });
 window.addEventListener("resize", hideCard);
 document.addEventListener("click", hideCard);
 
+office.onChange = refreshUI;
 connect();

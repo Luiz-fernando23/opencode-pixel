@@ -1,9 +1,9 @@
 # opencode-pixel
 
-A tiny pixel-art office for your [OpenCode](https://opencode.ai) agents. Every session gets a desk:
-characters type while a tool runs, show a thought bubble while the model thinks, stand up and wave
-when a permission is waiting, and celebrate when the task is done. New sessions walk in from the
-lounge.
+A tiny pixel-art office for your [OpenCode](https://opencode.ai) agents. The office starts empty:
+characters walk in when a session starts working, type while a tool runs, show a thought bubble while
+the model thinks, stand up and wave when a permission is waiting, and celebrate before walking out.
+Idle sessions stay offstage, so an unused office really is quiet.
 
 ![opencode-pixel dashboard](docs/dashboard.png)
 
@@ -14,14 +14,18 @@ the machine, not only the project it was loaded for.
 
 - **An actual office** — eight hand-drawn desks, a lounge, meeting corner, kitchenette, plants, a cat
   and a night window. Original art, 600×340 logical pixels, rendered at 2× with crisp integer scaling.
-- **Live states, not just dots** — working, thinking, waiting for permission, done, idle and error all
-  have their own screen, bubble, pose and colour.
-- **Walking transitions** — sessions enter through the lounge, cross the divider, walk to their desk
-  and sit down. Waiting/done agents stand up and step away from the keyboard.
-- **Subagent markers** — sessions created by a subagent get a floating blue diamond in the scene and a
-  `↳` marker in the roster; top-level sessions are seated first.
-- **Identification on demand** — a permanent roster below the scene, optional nameplates (`NAMES`),
-  hover/click cards with project, status, tool, model and current task, plus desk hotspots.
+- **Only active sessions** — working, thinking, waiting for permission, error and a short done
+  celebration appear in the office. Idle sessions are hidden; when nothing is running, the room is
+  empty and every chair stays visible.
+- **Walking transitions** — new work enters through the lounge, crosses the divider, walks to a desk
+  and sits down. When a session goes idle it walks back out; waiting/done agents stand up and step
+  away from the keyboard. Done gets about four seconds of celebration first.
+- **Subagent markers** — sessions created by a subagent get their own desk, a floating blue diamond in
+  the scene and a `↳` marker in the roster.
+- **Identification on demand** — a roster of active sessions below the scene, optional nameplates
+  (`NAMES`), hover/click cards with project, status, tool, model and current task, plus desk hotspots.
+- **Capacity-aware** — up to eight active sessions get desks. Extra active sessions are queued and
+  take the next freed desk; the HUD shows `+N active hidden` while that happens.
 - **Responsive** — layouts for 1440×900, 1024×768 and 390×844; reduced-motion users get instant state
   changes instead of walking animations.
 - **Local only** — the HTTP server binds to `127.0.0.1`; the page has no external fonts, images or CDN
@@ -32,9 +36,9 @@ the machine, not only the project it was loaded for.
 | `working` | Seated, typing; the monitor streams coloured code. |
 | `thinking` | Seated with an amber thought bubble and a pulsing monitor. |
 | `waiting` | Stands beside the desk, waves, red `!` bubble and monitor. |
-| `done` | Stands up and celebrates with a green check. |
+| `done` | Celebrates with a green check for ~4 seconds, then walks out. |
 | `error` | Seated at a red monitor with pixel smoke. |
-| `idle` | Seated, dozing with a `z` bubble. |
+| `idle` | Not drawn; the office stays empty until work starts again. |
 
 ## Install
 
